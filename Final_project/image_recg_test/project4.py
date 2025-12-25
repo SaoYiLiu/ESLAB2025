@@ -11,60 +11,11 @@ from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QFrame, QWidget, QTextEdit
 
 
-from threading import Lock
-
-
-import socket, threading, queue
-
-HOST, PORT = "0.0.0.0", 8002
-
-# 1. SIGNAL EMITTER CLASS
-class WorkerSignals(QObject):
-    """Defines signals available from a running worker thread."""
-    
-    # Signal to tell the main thread to start a timer. 
-    # We pass the desired interval (int) as an argument.
-    start_timer = Signal(int)
-
-class Worker(QRunnable):
-    """Worker thread.
-
-    Inherits from QRunnable to handler worker thread setup, signals and wrap-up.
-
-    :param callback: The function callback to run on this worker thread.
-                     Supplied args and kwargs will be passed through to the runner.
-    :type callback: function
-    :param args: Arguments to pass to the callback function
-    :param kwargs: Keywords to pass to the callback function
-    """
-
-    def __init__(self, fn, *args, **kwargs):
-        super().__init__()
-
-        # 2. Instantiate the signal emitter
-        self.signals = WorkerSignals()
-
-        self.fn = fn
-        self.args =  (self.signals, ) + args
-        self.kwargs = kwargs
-
-
-
-    @Slot()
-    def run(self):
-        """Initialise the runner function with passed args, kwargs."""
-        self.fn(*self.args, **self.kwargs)
-
-
 class MyWidget(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Elevator Server App")
 
-        self.hello = ["Hallo Welt", "Hei maailma", "Hola Mundo"]
-        self.mouse_pos = 0
-        self.lock = Lock()
-        self.conn_open = False
 
         self.button = QtWidgets.QPushButton("Show Command")
         self.button.clicked.connect(self.magic)
@@ -85,36 +36,12 @@ class MyWidget(QtWidgets.QWidget):
 
         self.button_2 = QtWidgets.QPushButton("Connect to serial port")
         self.button_2.clicked.connect(self.Button_2_action)
-        self.button_2.clicked.connect(self.ConnectWifi)
+        self.button_2.clicked.connect(self.ConnectPort)
         self.text_message = QtWidgets.QLabel(alignment=QtCore.Qt.AlignCenter)
         self.text_from_STM = QtWidgets.QLabel(alignment=QtCore.Qt.AlignCenter)
         self.text_message.setFont(QFont("Arial", 14))
         self.text_from_STM.setFont(QFont("Arial", 14))
         self.message = ""
-
-        self.button_3 = QtWidgets.QPushButton("Disconnect")
-        self.button_3.setEnabled(False)
-        self.button_3.clicked.connect(self.Button_3_action)
-
-
-        #Creates a custom right-click menu
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
-        #The click position is sent to the on_context_menu method when triggered
-        self.customContextMenuRequested.connect(self.on_context_menu)
-
-        # Define actions ONCE here
-        self.action_test1 = QAction("Mouse position", self)
-        self.action_test2 = QAction("Test 2", self)
-        self.action_test3 = QAction("Test 3", self)
-
-        # Connect signals
-        self.action_test1.triggered.connect(self.do_test1)
-        self.action_test2.triggered.connect(self.do_test2)
-        self.action_test3.triggered.connect(self.do_test3)
-
-        # Declare threadpool
-        self.threadpool = QThreadPool()
-
 
         # --- Configuration ---
         self.ELEVATOR_HEIGHT = 50
@@ -212,13 +139,11 @@ class MyWidget(QtWidgets.QWidget):
         self.layout.addStretch(5)  
         self.layout.addWidget(self.button)
         self.layout.addWidget(self.button_2)
-        self.layout.addWidget(self.button_3)
-
+        
         self.setLayout(self.layout)
 #############################################################################
     @QtCore.Slot()
     def magic(self):
-        self.text.setText(random.choice(self.hello))
         if self.command_list.isVisible():
             # If it's visible, hide it and change button text to show
             self.command_list.hide()
@@ -237,28 +162,6 @@ class MyWidget(QtWidgets.QWidget):
         self.button_2.setText("Connecting...")
         app.processEvents()  # forces the GUI to update
 
-    def Button_3_action(self):
-        self.lock.acquire()
-        self.conn_open = False
-        self.button_3.setEnabled(False)
-        self.lock.release()
-    
-    def on_context_menu(self, pos):
-        context = QMenu(self)
-        context.addAction(self.action_test1)
-        context.addAction(self.action_test2)
-        context.addAction(self.action_test3)
-
-        self.mouse_pos = self.mapToGlobal(pos)
-        context.exec(self.mapToGlobal(pos))
-    
-    def do_test1(self):
-        pass
-    
-    def do_test2(self):
-        print("hi")
-    def do_test3(self):
-        print("bye")
 
     def extract_command(self, text):
         try:
@@ -321,65 +224,7 @@ class MyWidget(QtWidgets.QWidget):
         self.move_timer.start()
 
 
-    def start_socket(self, signals_emitter):
-        try:
-            while self.conn_open:
-                # ===== 收 STM32 =====
-                try:
-                    #waits until data arrives
-                    self.lock.acquire()
-                    data = conn.recv(1024)
-                    if not data:
-                        print("STM32 closed connection.")
-                        break
-                    text = data.decode("utf-8", "replace").rstrip("\r\n")
-                    print("RX from STM32:", text)
-                    self.message = text
-                    self.text_from_STM.setText(self.message)
-                    command = self.extract_command(text)
-                    self.move(command, signals_emitter)
-                    app.processEvents()  # forces the GUI to update
-                    self.lock.release()
-
-
-                except socket.timeout:
-                    self.lock.release()
-                    if self.conn_open == False:
-                        break
-                    continue
-
-                # ===== 送使用者輸入 =====
-                '''
-                try:
-                    line = q.get_nowait()
-                except queue.Empty:
-                    line = None
-                if line:
-                    payload = (line.rstrip("\r\n") + "\n").encode("utf-8")
-                    conn.sendall(payload)
-                    print("TX to STM32:", line.rstrip("\r\n"))
-                '''
-
-        except (ConnectionResetError, OSError) as e:
-            print("Connection error:", e)
-        finally:
-            try:
-                # Enable the button
-                self.text_message.setText( f"Disconnected")
-                self.button_2.setEnabled(True)
-                self.button_2.setText("Connect to Wifi")
-                self.message = ""
-                self.text_from_STM.setText("")
-                conn.close()
-                s.close()
-                print("connection closed")
-            except Exception:
-                print(Exception)
-                pass
-            print("Waiting for next connection...\n")
-
-
-    def ConnectWifi(self):
+    def ConnectPort(self):
         # 2. Configure Port Settings
         # Replace 'COM3' or '/dev/ttyACM0' with your STM32's port
         self.serial.setPortName("COM6") 
@@ -399,20 +244,6 @@ class MyWidget(QtWidgets.QWidget):
 
         app.processEvents()  # forces the GUI to update
 
-
-            #q: queue.Queue[str | None] = queue.Queue()
-            #threading.Thread(target=input_worker, args=(q,), daemon=True).start()
-
-        #For disconnecting
-        self.button_3.setEnabled(True)
-
-
-        #Start a thread for receiving message
-        #worker = Worker(self.start_socket)
-        #worker.signals.start_timer.connect(self.start_main_timer_safely)
-        #self.threadpool.start(worker)
-
-    @Slot()
     def receive_data(self):
         # 3. Read the data
         # readAll() returns a QByteArray
